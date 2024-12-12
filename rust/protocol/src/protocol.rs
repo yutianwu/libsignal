@@ -285,6 +285,7 @@ impl PreKeySignalMessage {
             base_key: Some(base_key.serialize().into_vec()),
             identity_key: Some(identity_key.serialize().into_vec()),
             message: Some(Vec::from(message.as_ref())),
+            ephemeral_derivation_key: None,
         };
         let mut serialized = Vec::with_capacity(1 + proto_message.encoded_len());
         serialized.push(((message_version & 0xF) << 4) | CIPHERTEXT_MESSAGE_CURRENT_VERSION);

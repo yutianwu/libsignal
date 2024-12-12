@@ -117,6 +117,7 @@ impl SessionState {
                 remote_registration_id: 0,
                 local_registration_id: 0,
                 alice_base_key: alice_base_key.serialize().into_vec(),
+                ephemeral_derivation_key: None,
             },
         }
     }
@@ -529,6 +530,7 @@ impl SessionState {
             remote_registration_id: _remote_registration_id,
             local_registration_id: _local_registration_id,
             alice_base_key: _alice_base_key,
+            ephemeral_derivation_key: _ephemeral_derivation_key,
         } = &self.session;
         // ####### IMPORTANT #######
         // Don't forget to clean up new pending fields.
