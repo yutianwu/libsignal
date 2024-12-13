@@ -85,6 +85,13 @@ pub(crate) fn initialize_alice_session<R: Rng + CryptoRng>(
     });
     let has_kyber = parameters.their_kyber_pre_key().is_some();
 
+    let ephemeral_key = KeyPair::generate(&mut csprng);
+    let ephemeral_derivation = ephemeral_key.private_key.calculate_agreement(
+        parameters.their_signed_pre_key()
+    )?;
+
+    secrets.extend_from_slice(&ephemeral_derivation);
+
     let (root_key, chain_key) = derive_keys(has_kyber, &secrets);
 
     let (sending_chain_root_key, sending_chain_chain_key) = root_key.create_chain(
@@ -101,6 +108,8 @@ pub(crate) fn initialize_alice_session<R: Rng + CryptoRng>(
     )
     .with_receiver_chain(parameters.their_ratchet_key(), &chain_key)
     .with_sender_chain(&sending_ratchet_key, &sending_chain_chain_key);
+
+    session.set_ephemeral_derivation_key(&ephemeral_key.public_key);
 
     if let Some(kyber_ciphertext) = kyber_ciphertext {
         session.set_kyber_ciphertext(kyber_ciphertext);
@@ -145,6 +154,14 @@ pub(crate) fn initialize_bob_session(
                 .private_key
                 .calculate_agreement(parameters.their_base_key())?,
         );
+    }
+
+    if let Some(ephemeral_key) = parameters.ephemeral_derivation_key() {
+        let ephemeral_derivation = parameters
+            .our_signed_pre_key_pair()
+            .private_key
+            .calculate_agreement(ephemeral_key)?;
+        secrets.extend_from_slice(&ephemeral_derivation);
     }
 
     match (
