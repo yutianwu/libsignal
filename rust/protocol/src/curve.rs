@@ -7,6 +7,7 @@ pub(crate) mod curve25519;
 
 use std::cmp::Ordering;
 use std::fmt;
+use std::ops::Add;
 
 use arrayref::array_ref;
 use curve25519_dalek::scalar;
@@ -139,6 +140,16 @@ impl PublicKey {
     pub fn key_type(&self) -> KeyType {
         match &self.key {
             PublicKeyData::DjbPublicKey(_) => KeyType::Djb,
+        }
+    }
+
+    // Add method for point addition
+    fn add_public_key(&self, other: &PublicKey) -> Result<PublicKey> {
+        match (self.key, other.key) {
+            (PublicKeyData::DjbPublicKey(p1), PublicKeyData::DjbPublicKey(p2)) => {
+                let result = curve25519::add_public_keys(&p1, &p2)?;
+                Ok(PublicKey::new(PublicKeyData::DjbPublicKey(result)))
+            }
         }
     }
 }
@@ -279,6 +290,16 @@ impl PrivateKey {
             }
         }
     }
+
+    // Add method for scalar addition
+    fn add_private_key(&self, other: &PrivateKey) -> Result<PrivateKey> {
+        match (self.key, other.key) {
+            (PrivateKeyData::DjbPrivateKey(s1), PrivateKeyData::DjbPrivateKey(s2)) => {
+                let result = curve25519::add_private_keys(&s1, &s2)?;
+                Ok(PrivateKey::from(PrivateKeyData::DjbPrivateKey(result)))
+            }
+        }
+    }
 }
 
 impl From<PrivateKeyData> for PrivateKey {
@@ -353,6 +374,24 @@ impl TryFrom<PrivateKey> for KeyPair {
     fn try_from(value: PrivateKey) -> Result<Self> {
         let public_key = value.public_key()?;
         Ok(Self::new(public_key, value))
+    }
+}
+
+impl Add for &PublicKey {
+    type Output = Result<PublicKey>;
+
+    fn add(self, other: Self) -> Self::Output {
+        // Implement point addition for curve25519
+        self.add_public_key(other)
+    }
+}
+
+impl Add for &PrivateKey {
+    type Output = Result<PrivateKey>;
+
+    fn add(self, other: Self) -> Self::Output {
+        // Implement scalar addition for curve25519
+        self.add_private_key(other)
     }
 }
 

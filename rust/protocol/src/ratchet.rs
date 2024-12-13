@@ -7,12 +7,13 @@ mod keys;
 mod params;
 
 use rand::{CryptoRng, Rng};
+use sha2::Digest;
+use crate::protocol::{CIPHERTEXT_MESSAGE_CURRENT_VERSION, CIPHERTEXT_MESSAGE_PRE_KYBER_VERSION};
+use crate::state::SessionState;
+use crate::{KeyPair, Result, SessionRecord, PrivateKey, PublicKey};
 
 pub(crate) use self::keys::{ChainKey, MessageKeys, RootKey};
 pub use self::params::{AliceSignalProtocolParameters, BobSignalProtocolParameters};
-use crate::protocol::{CIPHERTEXT_MESSAGE_CURRENT_VERSION, CIPHERTEXT_MESSAGE_PRE_KYBER_VERSION};
-use crate::state::SessionState;
-use crate::{KeyPair, Result, SessionRecord};
 
 fn derive_keys(has_kyber: bool, secret_input: &[u8]) -> (RootKey, ChainKey) {
     let label = if has_kyber {
@@ -73,9 +74,19 @@ pub(crate) fn initialize_alice_session<R: Rng + CryptoRng>(
         &our_base_private_key.calculate_agreement(parameters.their_signed_pre_key())?,
     );
 
+    let ephemeral_key = KeyPair::generate(&mut csprng);
+
     if let Some(their_one_time_prekey) = parameters.their_one_time_pre_key() {
+        let r = ephemeral_key.private_key;
+
+        // Calculate r * OPK_seed
+        let shared_secret = r.calculate_agreement(their_one_time_prekey)?;
+        let hash = sha2::Sha256::digest(&shared_secret);
+        let hash_public = PublicKey::try_from(&hash[..])?;
+        let opk_b_pk = (their_one_time_prekey + &hash_public)?;
+
         secrets
-            .extend_from_slice(&our_base_private_key.calculate_agreement(their_one_time_prekey)?);
+            .extend_from_slice(&our_base_private_key.calculate_agreement(&opk_b_pk)?);
     }
 
     let kyber_ciphertext = parameters.their_kyber_pre_key().map(|kyber_public| {
@@ -86,11 +97,6 @@ pub(crate) fn initialize_alice_session<R: Rng + CryptoRng>(
     let has_kyber = parameters.their_kyber_pre_key().is_some();
 
     let ephemeral_key = KeyPair::generate(&mut csprng);
-    let ephemeral_derivation = ephemeral_key.private_key.calculate_agreement(
-        parameters.their_signed_pre_key()
-    )?;
-
-    secrets.extend_from_slice(&ephemeral_derivation);
 
     let (root_key, chain_key) = derive_keys(has_kyber, &secrets);
 
@@ -149,20 +155,25 @@ pub(crate) fn initialize_bob_session(
     );
 
     if let Some(our_one_time_pre_key_pair) = parameters.our_one_time_pre_key_pair() {
-        secrets.extend_from_slice(
-            &our_one_time_pre_key_pair
-                .private_key
-                .calculate_agreement(parameters.their_base_key())?,
-        );
+        if let Some(ephemeral_key) = parameters.ephemeral_derivation_key() {
+            let opk_seed_sk = our_one_time_pre_key_pair.private_key;
+            let shared_secret = opk_seed_sk.calculate_agreement(ephemeral_key)?;
+            let hash = sha2::Sha256::digest(&shared_secret);
+            let hash_private = PrivateKey::try_from(&hash[..])?;
+            let opk_b_sk = (&opk_seed_sk + &hash_private)?;
+
+            secrets.extend_from_slice(
+                &opk_b_sk.calculate_agreement(parameters.their_base_key())?,
+            );
+        } else {
+            secrets.extend_from_slice(
+                &our_one_time_pre_key_pair
+                    .private_key
+                    .calculate_agreement(parameters.their_base_key())?,
+            );
+        }
     }
 
-    if let Some(ephemeral_key) = parameters.ephemeral_derivation_key() {
-        let ephemeral_derivation = parameters
-            .our_signed_pre_key_pair()
-            .private_key
-            .calculate_agreement(ephemeral_key)?;
-        secrets.extend_from_slice(&ephemeral_derivation);
-    }
 
     match (
         parameters.our_kyber_pre_key_pair(),
