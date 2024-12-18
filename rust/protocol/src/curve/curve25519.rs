@@ -305,33 +305,3 @@ mod tests {
         }
     }
 }
-
-pub(crate) fn add_public_keys(p1: &[u8; 32], p2: &[u8; 32]) -> Result<[u8; 32], SignalProtocolError> {
-    // Convert Montgomery points to Edwards points for addition
-    let mont_point1 = MontgomeryPoint(*p1);
-    let mont_point2 = MontgomeryPoint(*p2);
-
-    let ed_point1 = mont_point1.to_edwards(0)
-        .ok_or(SignalProtocolError::InvalidArgument("Invalid curve point".to_string()))?;
-    let ed_point2 = mont_point2.to_edwards(0)
-        .ok_or(SignalProtocolError::InvalidArgument("Invalid curve point".to_string()))?;
-
-    let sum = ed_point1 + ed_point2;
-
-    // Convert back to Montgomery form
-    let mont_sum = sum.to_montgomery();
-    Ok(mont_sum.to_bytes())
-}
-
-pub(crate) fn add_private_keys(s1: &[u8; 32], s2: &[u8; 32]) -> Result<[u8; 32], SignalProtocolError> {
-    // Scalar addition in the Montgomery curve's scalar field
-    let scalar1 = Scalar::from_canonical_bytes(*s1)
-        .into_option()
-        .ok_or(SignalProtocolError::InvalidArgument("Invalid scalar value".to_string()))?;
-    let scalar2 = Scalar::from_canonical_bytes(*s2)
-        .into_option()
-        .ok_or(SignalProtocolError::InvalidArgument("Invalid scalar value".to_string()))?;
-
-    let sum = scalar1 + scalar2;
-    Ok(sum.to_bytes())
-}
