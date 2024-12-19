@@ -368,6 +368,7 @@ impl TestStoreBuilder {
                 .expect("syng")
                 .expect("has pre key")
         });
+
         let identity_key_pair = self
             .store
             .get_identity_key_pair()
@@ -394,13 +395,17 @@ impl TestStoreBuilder {
                 .expect("sync")
                 .expect("has kyber pre key")
         });
+
         let mut bundle = PreKeyBundle::new(
             registration_id,
             device_id,
             maybe_pre_key_record.map(|rec| {
+                let private_key = rec.private_key().unwrap();
+                let ed_pub_key = private_key.calculate_compressed_edwards_pubkey().unwrap();
+                let pub_key = PublicKey::from_djb_public_key_bytes(&ed_pub_key.to_bytes()).unwrap();
                 (
                     rec.id().expect("has id"),
-                    rec.public_key().expect("has public key"),
+                    pub_key,
                 )
             }),
             signed_pre_key_record.id().expect("has id"),
