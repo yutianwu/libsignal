@@ -10,9 +10,7 @@ use std::fmt;
 use std::ops::Add;
 
 use arrayref::array_ref;
-use curve25519_dalek::edwards::CompressedEdwardsY;
-use curve25519_dalek::{scalar, Scalar};
-use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+use curve25519_dalek::{constants::ED25519_BASEPOINT_TABLE, edwards::CompressedEdwardsY, scalar, Scalar};
 use rand::{CryptoRng, Rng};
 use subtle::ConstantTimeEq;
 
@@ -254,6 +252,21 @@ impl PrivateKey {
         }
     }
 
+    pub fn calculate_compressed_edwards_pubkey(&self) -> Result<CompressedEdwardsY> {
+        match self.key {
+            PrivateKeyData::DjbPrivateKey(k) => {
+                let private_key = curve25519::PrivateKey::from(k);
+                let key_data = private_key.private_key_bytes();
+                let a = Scalar::from_bytes_mod_order(key_data);
+                let ed_public_key_point = &a * ED25519_BASEPOINT_TABLE;
+                let ed_public_key = ed_public_key_point.compress();
+
+                PublicKey::new(PublicKeyData::DjbPublicKey(ed_public_key.to_bytes()));
+                Ok(ed_public_key)
+            }
+        }
+    }
+
     pub fn calculate_signature<R: CryptoRng + Rng>(
         &self,
         message: &[u8],
@@ -284,18 +297,6 @@ impl PrivateKey {
         }
     }
 
-    pub fn calculate_compressed_edwards_pubkey(&self) -> Result<CompressedEdwardsY> {
-        match self.key {
-            PrivateKeyData::DjbPrivateKey(k) => {
-                let private_key = curve25519::PrivateKey::from(k);
-                let key_data = private_key.private_key_bytes();
-                let a = Scalar::from_bytes_mod_order(key_data);
-                let ed_public_key_point = &a * ED25519_BASEPOINT_TABLE;
-                let ed_public_key = ed_public_key_point.compress();
-                Ok(ed_public_key)
-            }
-        }
-    }
 }
 
 impl From<PrivateKeyData> for PrivateKey {

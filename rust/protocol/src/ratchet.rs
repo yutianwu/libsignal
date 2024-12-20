@@ -8,15 +8,15 @@ mod params;
 
 use std::io::Read;
 
+use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+use curve25519_dalek::{EdwardsPoint, MontgomeryPoint};
 use curve25519_dalek::{
     constants::RISTRETTO_BASEPOINT_POINT,
-    ristretto::RistrettoPoint,
     scalar::Scalar
 };
-use curve25519_dalek::edwards::CompressedEdwardsY;
+use curve25519_dalek::edwards::{CompressedEdwardsY, EdwardsBasepointTable};
 use rand::{CryptoRng, Rng};
 use sha2::{Sha512, Digest};
-use curve25519_dalek::ristretto::CompressedRistretto;
 
 use crate::protocol::{CIPHERTEXT_MESSAGE_CURRENT_VERSION, CIPHERTEXT_MESSAGE_PRE_KYBER_VERSION};
 use crate::state::SessionState;
@@ -86,8 +86,6 @@ pub(crate) fn initialize_alice_session<R: Rng + CryptoRng>(
 
     let ephemeral_key = KeyPair::generate(&mut csprng);
 
-    let ephemeral_private_key = ephemeral_key.private_key.calculate_compressed_edwards_pubkey()?;
-
     if let Some(their_one_time_prekey) = parameters.their_one_time_pre_key() {
         let r = ephemeral_key.private_key;
         let opk_seed = their_one_time_prekey;
@@ -113,31 +111,19 @@ pub(crate) fn initialize_alice_session<R: Rng + CryptoRng>(
         println!("Alice Step 4.1: Hash scalar bytes: {:?}", hash_scalar.to_bytes());
         println!("Step 4: Generated hash scalar");
 
-        // 使用 RISTRETTO_BASEPOINT_POINT 和标量相乘来创建点
-        let seed_point = CompressedRistretto::from_slice(&opk_seed.public_key_bytes()?)
-            .map_err(|_| SignalProtocolError::InvalidArgument("Invalid point bytes".to_string()))?
-            .decompress()
-            .ok_or_else(|| SignalProtocolError::InvalidArgument("Failed to decompress point".to_string()))?;
-        println!("Step 5.2: Successfully created seed point");
-
-        let opk_b_alice = (hash_scalar * RISTRETTO_BASEPOINT_POINT) + ed_pub_key.to_montgomery();
+        let opk_b_alice: EdwardsPoint = (&hash_scalar * ED25519_BASEPOINT_TABLE) + ed_pub_key;
         println!("Step 6: Calculated opk_b_alice");
 
+        let our_base_scalar = Scalar::from_bytes_mod_order(our_base_private_key.serialize()[..32].try_into().unwrap());
+        let shared_ed_secret: EdwardsPoint = our_base_scalar * opk_b_alice;
+        println!("Shared secret in Montgomery {}", hex::encode(shared_ed_secret.to_montgomery().to_bytes()));
         // 使用相同的方式创建公钥
-        let opk_b_pk_alice = PublicKey::from_djb_public_key_bytes(opk_b_alice.compress().as_bytes())?;
-        println!("Step 7: Created Alice's public key: {:?}", opk_b_pk_alice.public_key_bytes()?);
+        println!("Step 7: Created Alice's public key: {:?}", opk_b_alice.compress().as_bytes());
 
-        // 将 DjbPublicKey 转换回 RistrettoPoint 并打印
-        let alice_point = CompressedRistretto::from_slice(&opk_b_pk_alice.public_key_bytes()?)
-            .and_then(|compressed| Ok(compressed.decompress().unwrap()))
-            .expect("Valid public key");
-        println!("Step 7.1: Converted back to RistrettoPoint: {:?}", alice_point.compress().as_bytes());
-
-        println!("Step 8: Deserialized Alice's public key");
-
+        let opk_b_pk_alice = PublicKey::from_djb_public_key_bytes(opk_b_alice.to_montgomery().to_bytes().as_slice())?;
         // Alice 端计算 agreement
-        let alice_agreement = our_base_private_key.calculate_agreement(&opk_b_pk_alice)?;
-        println!("Alice Agreement: {:?}", alice_agreement);
+        println!("Bob pkk {:?}", opk_b_pk_alice.public_key_bytes());
+        let alice_agreement = shared_ed_secret.to_montgomery().to_bytes();
         secrets.extend_from_slice(&alice_agreement);
     }
 
@@ -165,8 +151,7 @@ pub(crate) fn initialize_alice_session<R: Rng + CryptoRng>(
     .with_receiver_chain(parameters.their_ratchet_key(), &chain_key)
     .with_sender_chain(&sending_ratchet_key, &sending_chain_chain_key);
 
-    let pub_key = PublicKey::from_djb_public_key_bytes(&ephemeral_private_key.to_bytes())?;
-    session.set_ephemeral_derivation_key(&pub_key);
+    session.set_ephemeral_derivation_key(&ephemeral_key.public_key);
 
     if let Some(kyber_ciphertext) = kyber_ciphertext {
         session.set_kyber_ciphertext(kyber_ciphertext);
@@ -210,14 +195,10 @@ pub(crate) fn initialize_bob_session(
             let opk_seed_sk = our_one_time_pre_key_pair.private_key;
             println!("Bob Step 1: Got one_time_pre_key private key");
 
-            let ephemeral_public = PublicKey::from_djb_public_key_bytes(ephemeral_key.public_key_bytes()?)?;
-            println!("Bob Step 2: Got ephemeral public key: {:?}", ephemeral_key.public_key_bytes()?);
-
             // 1. Calculate OPK_seed_sk * R (使用与Alice相同的方式计算shared secret)
-            let shared_secret = opk_seed_sk.calculate_agreement(&ephemeral_public)?;
+            let shared_secret = opk_seed_sk.calculate_agreement(&ephemeral_key)?;
             println!("Bob Step 3: Calculated shared secret: {:?}", shared_secret);
             println!("Bob Step 3.1: Using opk_seed_sk private key: {:?}", opk_seed_sk.serialize());
-            println!("Bob Step 3.2: Using ephemeral public key: {:?}", ephemeral_public.public_key_bytes()?);
 
             // 2. Hash the shared secret (与Alice使用相同的哈希方法)
             let mut hasher = Sha512::new();
@@ -230,36 +211,30 @@ pub(crate) fn initialize_bob_session(
 
             // 3. 使用相同的seed_point计算
             let seed_scalar = Scalar::from_bytes_mod_order(opk_seed_sk.serialize()[..32].try_into().unwrap());
-            let seed_point = seed_scalar * RISTRETTO_BASEPOINT_POINT;
             println!("Bob Step 6: Created seed point");
 
+            let seed_pub_key = &seed_scalar * ED25519_BASEPOINT_TABLE;
+            println!("seed pub key 1 {}", hex::encode(seed_pub_key.to_montgomery().as_bytes()));
+            println!("seed pub key 2 {}", hex::encode(our_one_time_pre_key_pair.public_key.public_key_bytes()?));
             // 4. 计算公钥点
-            let opk_b_bob = (hash_scalar  + seed_scalar) * RISTRETTO_BASEPOINT_POINT;
-            let opk_b_pk_bob = PublicKey::from_djb_public_key_bytes(opk_b_bob.compress().as_bytes())?;
-            println!("Bob Step 7: Generated Bob's public key: {:?}", opk_b_pk_bob.public_key_bytes()?);
+            let scalar_opk_b = hash_scalar + seed_scalar;
+            let opk_b_bob = &scalar_opk_b * ED25519_BASEPOINT_TABLE;
+            println!("Bob Step 7: Generated Bob's public key: {:?}", opk_b_bob.compress().as_bytes());
 
-            // 将 DjbPublicKey 转换回 RistrettoPoint 并打印
-            let bob_point = CompressedRistretto::from_slice(&opk_b_pk_bob.public_key_bytes()?)
-                .and_then(|compressed| Ok(compressed.decompress().unwrap()))
-                .expect("Valid public key");
-            println!("Bob Step 7.1: Converted back to RistrettoPoint: {:?}", bob_point.compress().as_bytes());
-
-            // 5. 计算对应的私钥标量
-            let opk_seed_sk_bytes = opk_seed_sk.serialize();
-            println!("Bob Step 8: Original private key bytes length: {}", opk_seed_sk_bytes.len());
-            let opk_seed_sk_scalar = Scalar::from_bytes_mod_order(opk_seed_sk_bytes[..32].try_into().unwrap());
-            // 使用与 Alice 相同的方式计算私钥
-            let opk_b_sk_scalar = hash_scalar + opk_seed_sk_scalar;
-            println!("Bob Step 9: Generated private key scalar");
-
+            let opk_b_pk_alice = PublicKey::from_djb_public_key_bytes(opk_b_bob.to_montgomery().to_bytes().as_slice())?;
+            // Alice 端计算 agreement
+            println!("Bob pkk direct {:?}", opk_b_pk_alice.public_key_bytes());
             // 6. 将私钥标量转换为私钥
-            let mut private_key_bytes = [0u8; 32];
-            private_key_bytes.copy_from_slice(&opk_b_sk_scalar.to_bytes());
-            let opk_b_sk_bob = PrivateKey::deserialize(&private_key_bytes)?;
+            
+            let ed_their_base_key =  MontgomeryPoint(parameters.their_base_key().public_key_bytes()?[..32].try_into().unwrap()).to_edwards(0).unwrap();
+            let shared_ed_secret = &scalar_opk_b * ed_their_base_key;
+            println!("Shared secret in Montgomery {}", hex::encode(shared_ed_secret.to_montgomery().to_bytes()));
+            let opk_b_sk_bob = PrivateKey::deserialize(&scalar_opk_b.to_bytes())?;
             println!("Bob Step 10: Generated Bob's private key");
 
+            println!("Bob pkk {:?}", opk_b_sk_bob.public_key().unwrap().public_key_bytes());
             // 7. 使用 opk_b_sk_bob 计算共享密钥
-            let agreement = opk_b_sk_bob.calculate_agreement(parameters.their_base_key())?;
+            let agreement = shared_ed_secret.to_montgomery().to_bytes();
             println!("Bob Agreement: {:?}", agreement);
             println!("Bob Step 12: Agreement length: {}", agreement.len());
 
@@ -370,12 +345,6 @@ mod tests {
         let opk_b_pk_alice = PublicKey::from_djb_public_key_bytes(opk_b_alice.compress().as_bytes())?;
         println!("Step 7: Created Alice's public key: {:?}", opk_b_pk_alice.public_key_bytes()?);
 
-        // 将 DjbPublicKey 转换回 RistrettoPoint 并打印
-        let alice_point = CompressedRistretto::from_slice(&opk_b_pk_alice.public_key_bytes()?)
-            .and_then(|compressed| Ok(compressed.decompress().unwrap()))
-            .expect("Valid public key");
-        println!("Step 7.1: Converted back to RistrettoPoint: {:?}", alice_point.compress().as_bytes());
-
         println!("Step 8: Deserialized Alice's public key");
 
         // Bob 端计算
@@ -407,12 +376,6 @@ mod tests {
         let opk_b_bob = (hash_scalar * RISTRETTO_BASEPOINT_POINT) + seed_point;
         let opk_b_pk_bob = PublicKey::from_djb_public_key_bytes(opk_b_bob.compress().as_bytes())?;
         println!("Bob Step 7: Generated Bob's public key: {:?}", opk_b_pk_bob.public_key_bytes()?);
-
-        // 将 DjbPublicKey 转换回 RistrettoPoint 并打印
-        let bob_point = CompressedRistretto::from_slice(&opk_b_pk_bob.public_key_bytes()?)
-            .and_then(|compressed| Ok(compressed.decompress().unwrap()))
-            .expect("Valid public key");
-        println!("Bob Step 7.1: Converted back to RistrettoPoint: {:?}", bob_point.compress().as_bytes());
 
         // 5. 计算对应的私钥标量
         let opk_seed_sk_bytes = opk_seed_sk.serialize();
